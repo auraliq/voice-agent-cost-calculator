@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice agent call cost calculator</title>
+<style>
+  :root { --bg:#fafaf7; --fg:#1d1d1b; --muted:#6b6b66; --card:#fff; --line:#e3e2dc; --accent:#1f5eff; --warn:#a15c00; --warnbg:#fff4e0;
+          --c1:#1f5eff; --c2:#16a34a; --c3:#d97706; --c4:#9333ea; --c5:#64748b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14140f; --fg:#ecebe4; --muted:#a09f96; --card:#1d1d17; --line:#33322b; --accent:#6c93ff; --warn:#f0b35a; --warnbg:#2a2113; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  p.sub { color: var(--muted); margin: 0 0 16px; }
+  .note { background: var(--warnbg); color: var(--warn); border: 1px solid var(--warn); border-radius: 8px; padding: 10px 14px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  @media (min-width: 900px) { .grid { grid-template-columns: 1.1fr 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  fieldset { border: 0; padding: 0; margin: 0 0 14px; }
+  legend { font-weight: 600; margin-bottom: 6px; }
+  .row { display: grid; grid-template-columns: 1fr 110px; gap: 8px; align-items: center; margin: 4px 0; }
+  .row label { font-size: 13px; }
+  .row small { color: var(--muted); display: block; font-size: 11.5px; }
+  input[type=number] { width: 100%; padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+  input[type=checkbox] { justify-self: end; width: 18px; height: 18px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: right; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  .big { font-size: 28px; font-weight: 700; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .kpi span { display:block; color: var(--muted); font-size: 12px; }
+  .bar { display: flex; height: 22px; border-radius: 6px; overflow: hidden; margin: 8px 0 4px; background: var(--line); }
+  .bar div { height: 100%; }
+  .legend { display:flex; flex-wrap:wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; }
+  .lessons li { margin-bottom: 8px; }
+  button { padding: 6px 10px; border:1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 6px; cursor: pointer; font: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Voice agent call cost calculator</h1>
+  <p class="sub">Estimate what one dialed number costs, what one real conversation costs, and what one booked appointment costs. Runs offline, nothing leaves your browser.</p>
+
+  <div class="note"><strong>All prices below are EXAMPLE values, not any vendor's current prices.</strong> Replace every price with the numbers from your own providers. Check your provider's pricing page: billing increments, answering-machine fees and what happens to unanswered calls differ a lot between providers.</div>
+
+  <div class="grid">
+    <section class="card" id="inputs"></section>
+    <section>
+      <div class="card" id="results" style="margin-bottom:16px"></div>
+      <div class="card"><h2>What this teaches (computed from your inputs)</h2><ul class="lessons" id="lessons"></ul></div>
+    </section>
+  </div>
+  <p style="margin-top:16px"><button id="reset" type="button">Reset to example values</button></p>
+</main>
+
+<script id="calc">
+// ---------------------------------------------------------------- model
+// Every default is an EXAMPLE. Replace with your providers' real prices.
+var FIELDS = [
+  // group, id, label, default, unit, help
+  ["Traffic", "n_dialed", "Numbers dialed", 1000, "", ""],
+  ["Traffic", "answer_rate", "Share of dials that get answered", 0.30, "0-1", "Pickups, including voicemail and machines."],
+  ["Traffic", "machine_share", "Share of answered calls that are machines", 0.65, "0-1", "Voicemail, carrier messages, call screeners."],
+  ["Traffic", "booking_rate", "Share of human conversations that book", 0.02, "0-1", "Only used for cost per appointment."],
+  ["Durations", "human_call_s", "Human conversation length", 90, "s", ""],
+  ["Durations", "machine_hangup_s", "Time until you hang up on a machine", 6, "s", "Includes the time the detector needs to decide."],
+  ["Durations", "ring_s", "Ringing time per unanswered dial", 20, "s", ""],
+  ["Telephony", "tel_per_min", "Price per minute", 0.015, "$ / min", "EXAMPLE"],
+  ["Telephony", "tel_increment_s", "Billing increment", 60, "s", "60 = every started minute is billed. Use 1 for per-second billing."],
+  ["Telephony", "tel_per_call", "Fixed fee per connected call", 0.002, "$", "EXAMPLE. Many providers also add media or streaming fees."],
+  ["Telephony", "bill_unanswered", "Unanswered rings are billed", 0, "checkbox", "Often they are not. Check your provider."],
+  ["Telephony", "amd_on", "Answering-machine detection on", 1, "checkbox", ""],
+  ["Telephony", "amd_fee", "AMD fee per answered call", 0.007, "$", "EXAMPLE"],
+  ["Speech out (TTS)", "tts_chars_per_min", "Characters spoken per minute of agent speech", 900, "chars", "About 150 words per minute."],
+  ["Speech out (TTS)", "agent_talk_share", "Share of the call the agent is speaking", 0.5, "0-1", ""],
+  ["Speech out (TTS)", "tts_credits_per_char", "Credits (or units) per character", 1, "", "Some vendors bill credits, not characters."],
+  ["Speech out (TTS)", "tts_price_per_1k", "Price per 1,000 credits", 0.10, "$", "EXAMPLE"],
+  ["Speech in (STT)", "stt_per_min", "Transcription price per minute of audio", 0.005, "$ / min", "EXAMPLE. Billed on the whole call duration here."],
+  ["LLM", "turns_human", "LLM turns per human conversation", 12, "", ""],
+  ["LLM", "turns_machine", "LLM turns per machine call", 1, "", "0 if you hang up before the model speaks."],
+  ["LLM", "prompt_tokens", "System prompt + tools (tokens, sent every turn)", 6000, "", "This is the part caching can discount."],
+  ["LLM", "user_tokens", "New user tokens per turn", 40, "", ""],
+  ["LLM", "out_tokens", "Output tokens per turn", 60, "", ""],
+  ["LLM", "price_in", "Input price per 1M tokens", 1.00, "$", "EXAMPLE"],
+  ["LLM", "price_cached", "Cached input price per 1M tokens", 0.10, "$", "EXAMPLE"],
+  ["LLM", "price_out", "Output price per 1M tokens", 4.00, "$", "EXAMPLE"],
+  ["LLM", "cache_on", "Prompt caching enabled", 1, "checkbox", ""],
+  ["LLM", "warm_share", "Share of calls that start with a warm cache", 0.8, "0-1", "Calls placed back to back in a batch keep the cache warm; a lone call after a quiet period does not."],
+  ["LLM", "cache_write_mult", "Cache write price multiplier", 1.25, "x", "Some providers charge extra the first time a prefix is cached."]
+];
+
+function defaults() {
+  var d = {};
+  FIELDS.forEach(function (f) { d[f[1]] = f[3]; });
+  return d;
+}
+
+function billedSeconds(sec, inc) {
+  if (sec <= 0) return 0;
+  inc = Math.max(1, inc);
+  return Math.ceil(sec / inc - 1e-9) * inc;
+}
+
+// Cost of the LLM for ONE call with `turns` turns.
+function llmCall(p, turns, warmStart) {
+  var usd = 0;
+  for (var k = 1; k <= turns; k++) {
+    var hist = (k - 1) * (p.user_tokens + p.out_tokens);
+    var prefix = p.prompt_tokens + hist;
+    var full = p.user_tokens, cached = 0, write = 0;
+    if (!p.cache_on) { full += prefix; }
+    else if (k === 1) { if (warmStart) cached = prefix; else write = prefix; }
+    else { cached = prefix; }
+    usd += (full * p.price_in + cached * p.price_cached + write * p.price_in * p.cache_write_mult
+            + p.out_tokens * p.price_out) / 1e6;
+  }
+  return usd;
+}
+
+function llmExpected(p, turns) {
+  if (turns <= 0) return 0;
+  var w = p.cache_on ? p.warm_share : 0;
+  return w * llmCall(p, turns, true) + (1 - w) * llmCall(p, turns, false);
+}
+
+function connectedCall(p, durationS, turns) {
+  var tel = billedSeconds(durationS, p.tel_increment_s) / 60 * p.tel_per_min + p.tel_per_call;
+  var amd = p.amd_on ? p.amd_fee : 0;
+  var chars = p.tts_chars_per_min * (durationS / 60) * p.agent_talk_share;
+  var tts = chars * p.tts_credits_per_char / 1000 * p.tts_price_per_1k;
+  var stt = p.stt_per_min * durationS / 60;
+  var llm = llmExpected(p, turns);
+  return { telephony: tel, amd: amd, tts: tts, stt: stt, llm: llm,
+           total: tel + amd + tts + stt + llm };
+}
+
+// Returns costs per dialed number, by segment and by component, plus totals.
+function estimate(p) {
+  var answered = p.answer_rate;
+  var machine = answered * p.machine_share;
+  var human = answered * (1 - p.machine_share);
+  var unanswered = 1 - answered;
+
+  var h = connectedCall(p, p.human_call_s, p.turns_human);
+  var m = connectedCall(p, p.machine_hangup_s, p.turns_machine);
+  var ringTel = p.bill_unanswered ? billedSeconds(p.ring_s, p.tel_increment_s) / 60 * p.tel_per_min : 0;
+  var u = { telephony: ringTel, amd: 0, tts: 0, stt: 0, llm: 0, total: ringTel };
+
+  var comps = ["telephony", "amd", "tts", "stt", "llm"];
+  var perDialed = { total: 0 };
+  comps.forEach(function (c) {
+    perDialed[c] = human * h[c] + machine * m[c] + unanswered * u[c];
+    perDialed.total += perDialed[c];
+  });
+  var segments = {
+    human: { share: human, perCall: h, perDialed: human * h.total },
+    machine: { share: machine, perCall: m, perDialed: machine * m.total },
+    unanswered: { share: unanswered, perCall: u, perDialed: unanswered * u.total }
+  };
+  var perHuman = human > 0 ? perDialed.total / human : null;
+  return {
+    perDialed: perDialed,
+    segments: segments,
+    perAnswered: answered > 0 ? perDialed.total / answered : null,
+    perHumanConversation: perHuman,
+    perAppointment: perHuman !== null && p.booking_rate > 0 ? perHuman / p.booking_rate : null,
+    batchTotal: perDialed.total * p.n_dialed
+  };
+}
+
+// Counterfactuals used by the lessons panel.
+function lessons(p) {
+  var base = estimate(p);
+  var noCache = estimate(Object.assign({}, p, { cache_on: 0 }));
+  var longer = estimate(Object.assign({}, p, { human_call_s: p.human_call_s * 1.5, turns_human: p.turns_human * 1.5 }));
+  var billedRings = estimate(Object.assign({}, p, { bill_unanswered: 1 }));
+  var freeRings = estimate(Object.assign({}, p, { bill_unanswered: 0 }));
+  var noMachines = estimate(Object.assign({}, p, { machine_share: 0 }));
+  var b = base.perDialed.total || 1e-12;
+  return {
+    base: base,
+    cacheOffDelta: (noCache.perDialed.total - base.perDialed.total) / b,
+    longerDelta: (longer.perDialed.total - base.perDialed.total) / b,
+    ringsBilledDelta: (billedRings.perDialed.total - freeRings.perDialed.total) / b,
+    machineCostShare: base.segments.machine.perDialed / b,
+    humanCostShare: base.segments.human.perDialed / b,
+    noMachines: noMachines
+  };
+}
+
+// ---------------------------------------------------------------- UI
+function fmtUsd(x) {
+  if (x === null || !isFinite(x)) return "n/a";
+  var a = Math.abs(x);
+  return "$" + x.toFixed(a >= 100 ? 0 : a >= 1 ? 2 : a >= 0.01 ? 3 : 5);
+}
+function pct(x) { return (x * 100 >= 0 ? "+" : "") + (x * 100).toFixed(0) + "%"; }
+
+if (typeof document !== "undefined") {
+  (function () {
+    var root = document.getElementById("inputs");
+    var state = defaults();
+    var els = {};
+    var group = null, fs = null;
+    FIELDS.forEach(function (f) {
+      if (f[0] !== group) {
+        group = f[0];
+        fs = document.createElement("fieldset");
+        var lg = document.createElement("legend"); lg.textContent = group; fs.appendChild(lg);
+        root.appendChild(fs);
+      }
+      var row = document.createElement("div"); row.className = "row";
+      var lab = document.createElement("label"); lab.htmlFor = "f_" + f[1];
+      lab.textContent = f[2] + (f[4] && f[4] !== "checkbox" ? " (" + f[4] + ")" : "");
+      if (f[5]) { var sm = document.createElement("small"); sm.textContent = f[5]; lab.appendChild(sm); }
+      var inp = document.createElement("input");
+      inp.id = "f_" + f[1];
+      if (f[4] === "checkbox") { inp.type = "checkbox"; inp.checked = !!f[3]; }
+      else { inp.type = "number"; inp.step = "any"; inp.min = "0"; inp.value = f[3]; }
+      inp.addEventListener("input", render);
+      els[f[1]] = inp;
+      row.appendChild(lab); row.appendChild(inp); fs.appendChild(row);
+    });
+
+    function read() {
+      var p = {};
+      FIELDS.forEach(function (f) {
+        var e = els[f[1]];
+        p[f[1]] = f[4] === "checkbox" ? (e.checked ? 1 : 0) : Math.max(0, parseFloat(e.value) || 0);
+      });
+      p.answer_rate = Math.min(1, p.answer_rate);
+      p.machine_share = Math.min(1, p.machine_share);
+      p.warm_share = Math.min(1, p.warm_share);
+      return p;
+    }
+
+    var COLORS = { telephony: "var(--c1)", amd: "var(--c2)", tts: "var(--c3)", stt: "var(--c4)", llm: "var(--c5)" };
+    var NAMES = { telephony: "Telephony", amd: "Answering-machine detection", tts: "Speech out (TTS)", stt: "Speech in (STT)", llm: "LLM" };
+
+    function render() {
+      var p = read();
+      var L = lessons(p), r = L.base;
+      var res = document.getElementById("results");
+      var total = r.perDialed.total || 1e-12;
+      var html = '<h2>Results</h2><div class="kpis">' +
+        kpi("Per dialed number", fmtUsd(r.perDialed.total)) +
+        kpi("Per answered call", fmtUsd(r.perAnswered)) +
+        kpi("Per human conversation", fmtUsd(r.perHumanConversation)) +
+        kpi("Per booked appointment", fmtUsd(r.perAppointment)) +
+        kpi("Whole batch (" + p.n_dialed + " dials)", fmtUsd(r.batchTotal)) + "</div>";
+      html += '<div class="bar">';
+      Object.keys(COLORS).forEach(function (c) {
+        html += '<div style="width:' + (r.perDialed[c] / total * 100).toFixed(2) + '%;background:' + COLORS[c] + '"></div>';
+      });
+      html += '</div><div class="legend">';
+      Object.keys(COLORS).forEach(function (c) {
+        html += '<span><i style="background:' + COLORS[c] + '"></i>' + NAMES[c] + " " + (r.perDialed[c] / total * 100).toFixed(0) + "%</span>";
+      });
+      html += "</div>";
+      html += '<table style="margin-top:12px"><tr><th>Segment</th><th>Share of dials</th><th>Cost per call</th><th>Share of spend</th></tr>';
+      ["human", "machine", "unanswered"].forEach(function (s) {
+        var seg = r.segments[s];
+        html += "<tr><td>" + s + "</td><td>" + (seg.share * 100).toFixed(1) + "%</td><td>" + fmtUsd(seg.perCall.total) +
+                "</td><td>" + (seg.perDialed / total * 100).toFixed(0) + "%</td></tr>";
+      });
+      html += "</table>";
+      res.innerHTML = html;
+
+      var ul = document.getElementById("lessons");
+      ul.innerHTML = "";
+      [
+        "<b>Caching vs length.</b> Turning prompt caching off changes your cost per dialed number by <b>" + pct(L.cacheOffDelta) +
+          "</b>. Making every human conversation 50% longer (50% more seconds and turns) changes it by <b>" + pct(L.longerDelta) +
+          "</b>. " + (L.cacheOffDelta > L.longerDelta
+            ? "With these inputs the cache matters more than call length: the system prompt is re-sent every turn."
+            : "With these inputs call length matters more; make the system prompt bigger to see the cache effect grow (it is re-sent on every turn)."),
+        "<b>Unanswered rings.</b> Many providers do not bill calls nobody picks up. If yours does, the same traffic costs <b>" +
+          pct(L.ringsBilledDelta) + "</b> more per dialed number (set the checkbox to compare). Verify on a real invoice, not on a pricing page.",
+        "<b>Machines.</b> Machine calls are <b>" + (p.machine_share * 100).toFixed(0) + "%</b> of answered calls but <b>" + (L.machineCostShare * 100).toFixed(0) +
+          "%</b> of spend (human conversations: <b>" + (L.humanCostShare * 100).toFixed(0) + "%</b>). Every second you take to hang up on one, and every billing increment it rounds up to, is multiplied by that share.",
+        "<b>Billing increments.</b> With a " + p.tel_increment_s + " s increment, a " + p.machine_hangup_s + " s machine call is billed as " +
+          billedSeconds(p.machine_hangup_s, p.tel_increment_s) + " s."
+      ].forEach(function (t) { var li = document.createElement("li"); li.innerHTML = t; ul.appendChild(li); });
+    }
+    function kpi(label, value) { return '<div class="kpi"><span>' + label + '</span><div class="big" style="font-size:22px">' + value + "</div></div>"; }
+
+    document.getElementById("reset").addEventListener("click", function () {
+      FIELDS.forEach(function (f) {
+        var e = els[f[1]];
+        if (f[4] === "checkbox") e.checked = !!f[3]; else e.value = f[3];
+      });
+      render();
+    });
+    render();
+  })();
+}
+</script>
+</body>
+</html>
